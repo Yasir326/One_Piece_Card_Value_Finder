@@ -17,9 +17,9 @@ Many cards share the same number but different arts (alternate, manga, SPR, etc.
 | Data | Source |
 |------|--------|
 | Card metadata, images, raw prices | [OPTCG API](https://www.optcgapi.com/) |
-| Graded / ungraded guide prices | [PriceCharting](https://www.pricecharting.com/category/one-piece-cards) (fetched via a local dev proxy in `vite.config.js`) |
+| Graded / ungraded guide prices (EN + JP) | [PriceCharting](https://www.pricecharting.com/category/one-piece-cards) via Netlify Functions / local dev proxy |
 
-Graded prices are **not** from OPTCG. They are scraped from PriceCharting product pages during development. Accuracy depends on matching the correct variant; known fixes live in `graded-price-overrides.json`.
+Graded prices are **not** from OPTCG. They are fetched from PriceCharting product pages. Accuracy depends on matching the correct variant; known fixes live in `graded-price-overrides.json`.
 
 ## Getting started
 
@@ -30,7 +30,40 @@ npm install
 npm run dev
 ```
 
-Open the URL Vite prints (usually `http://localhost:5173`). Restart the dev server after changing `vite.config.js` or `graded-price-overrides.json`.
+Open the URL Vite prints (usually `http://localhost:5173`). Restart the dev server after changing `server/pricecharting.js` or `graded-price-overrides.json`.
+
+## Deploy to Netlify (free)
+
+The repo includes `netlify.toml` and serverless functions so **English, Japanese, and graded prices** all work in production.
+
+### One-time setup
+
+1. Push this project to a **GitHub** repository
+2. Sign up at [netlify.com](https://www.netlify.com) and click **Add new site → Import an existing project**
+3. Connect GitHub and select your repo
+4. Netlify should auto-detect settings from `netlify.toml`:
+   - **Build command:** `npm run build`
+   - **Publish directory:** `dist`
+   - **Functions directory:** `netlify/functions`
+5. Under **Site configuration → Environment variables**, add:
+   - `VITE_PAYPAL_DONATE_URL` = `https://paypal.me/onepiecevalue`
+6. Click **Deploy site**
+
+Each push to `main` will redeploy automatically.
+
+### Custom domain (optional)
+
+In Netlify: **Domain management → Add a domain** and follow the DNS steps.
+
+### PayPal donations (optional)
+
+To show a **Support / Donate with PayPal** button in the header and footer:
+
+1. Copy `.env.example` to `.env`
+2. Set `VITE_PAYPAL_DONATE_URL` to your [PayPal.me](https://www.paypal.com/paypalme/) link or PayPal donate URL, e.g. `https://paypal.me/yourusername`
+3. Restart `npm run dev`
+
+The button stays hidden until that variable is set.
 
 Other scripts:
 
@@ -63,4 +96,4 @@ Use the exact PriceCharting game URL for that variant. Restart `npm run dev` aft
 
 - Two-week price history from OPTCG often returns server errors; the UI may show a “history temporarily unavailable” notice while current prices still load.
 - Graded matching is automated plus overrides; cards without a good PriceCharting page may show **N/A** or **Unverified** grades.
-- The PriceCharting proxy runs only in Vite dev/preview; a production deploy needs an equivalent backend route if you host the app publicly.
+- Japanese cards have no historical price chart (PriceCharting snapshot only).
