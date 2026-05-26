@@ -6,6 +6,86 @@ const OPTCG_BASE = "https://www.optcgapi.com";
 // PayPal.me or PayPal donate URL — set VITE_PAYPAL_DONATE_URL in .env (see .env.example)
 const PAYPAL_DONATE_URL = import.meta.env.VITE_PAYPAL_DONATE_URL?.trim() || "";
 
+// Approximate round-trip shipping costs (USD) from the user's country to a US-based grader.
+// These are user-facing estimates — easy to override in localStorage if the user edits the form.
+const GRADING_COUNTRIES = [
+  { code: "US", label: "United States", shipOneWay: 15 },
+  { code: "CA", label: "Canada", shipOneWay: 30 },
+  { code: "UK", label: "United Kingdom", shipOneWay: 35 },
+  { code: "EU", label: "Europe", shipOneWay: 35 },
+  { code: "AU", label: "Australia", shipOneWay: 50 },
+  { code: "JP", label: "Japan", shipOneWay: 40 },
+  { code: "SG", label: "Singapore", shipOneWay: 40 },
+  { code: "NZ", label: "New Zealand", shipOneWay: 55 },
+  { code: "OTHER", label: "Other / International", shipOneWay: 50 },
+];
+
+// Approximate per-card grading fees (USD). Real prices change frequently — these are
+// rough public values for the cheapest available tier of each service.
+const GRADING_SERVICES = [
+  {
+    id: "PSA",
+    label: "PSA",
+    color: "#dc2626",
+    tiers: [
+      { id: "value", label: "Value (45+ days)", price: 25, maxValue: 499 },
+      { id: "regular", label: "Regular (~20 days)", price: 75, maxValue: 4999 },
+      { id: "express", label: "Express (~10 days)", price: 150, maxValue: 9999 },
+    ],
+    grades: [
+      { key: "psa9", label: "PSA 9" },
+      { key: "psa10", label: "PSA 10" },
+    ],
+  },
+  {
+    id: "CGC",
+    label: "CGC",
+    color: "#2563eb",
+    tiers: [
+      { id: "standard", label: "Standard (~30 days)", price: 25, maxValue: 400 },
+      { id: "express", label: "Express (~10 days)", price: 60, maxValue: 1000 },
+      { id: "walkthrough", label: "Walkthrough (~5 days)", price: 150 },
+    ],
+    grades: [
+      { key: "cgc10", label: "CGC 10" },
+      { key: "cgc10Pristine", label: "CGC 10 Pristine" },
+    ],
+  },
+  {
+    id: "BGS",
+    label: "BGS",
+    color: "#7c3aed",
+    tiers: [
+      { id: "economy", label: "Economy (~90 days)", price: 30, maxValue: 999 },
+      { id: "standard", label: "Standard (~20 days)", price: 50, maxValue: 1999 },
+      { id: "express", label: "Express (~10 days)", price: 100 },
+    ],
+    grades: [
+      { key: "bgs10Pristine", label: "BGS 10 Pristine" },
+      { key: "bgs10BlackLabel", label: "BGS 10 Black Label" },
+    ],
+  },
+];
+
+function loadGradingPrefs() {
+  try {
+    const raw = localStorage.getItem("opcf:grading-prefs");
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveGradingPrefs(prefs) {
+  try {
+    localStorage.setItem("opcf:grading-prefs", JSON.stringify(prefs));
+  } catch {
+    /* localStorage unavailable */
+  }
+}
+
 const ENDPOINTS = {
   sets: "/api/sets",
   decks: "/api/decks",
@@ -607,6 +687,302 @@ function StatCard({ label, value, accent, big }) {
   );
 }
 
+function computeServiceROI({ service, tier, rawPrice, shipRoundTrip, gradedPrices }) {
+  const totalCost = Number(tier.price) + Number(shipRoundTrip) + Number(rawPrice);
+  const outcomes = service.grades.map((grade) => {
+    const value = Number(gradedPrices?.[grade.key]) || 0;
+    const profit = value > 0 ? value - totalCost : null;
+    const roi = profit !== null && totalCost > 0 ? (profit / totalCost) * 100 : null;
+    return { label: grade.label, value, profit, roi };
+  });
+
+  const profitable = outcomes.filter((o) => o.profit !== null && o.profit > 0);
+  const bestCase = outcomes
+    .filter((o) => o.value > 0)
+    .reduce((best, cur) => (best === null || cur.value > best.value ? cur : best), null);
+  const worstCase = outcomes
+    .filter((o) => o.value > 0)
+    .reduce((worst, cur) => (worst === null || cur.value < worst.value ? cur : worst), null);
+
+  let verdict = "unknown";
+  if (bestCase && worstCase) {
+    if (bestCase.profit > totalCost && worstCase.profit >= 0) verdict = "great";
+    else if (bestCase.profit > 0 && worstCase.profit >= 0) verdict = "good";
+    else if (bestCase.profit > 0) verdict = "risky";
+    else verdict = "bad";
+  }
+
+  return { outcomes, totalCost, bestCase, worstCase, verdict, hasProfitable: profitable.length > 0 };
+}
+
+const VERDICT_STYLES = {
+  great:   { label: "Likely Worth It", color: "#047857", bg: "#ecfdf5", border: "#6ee7b7" },
+  good:    { label: "Worth It",        color: "#047857", bg: "#ecfdf5", border: "#6ee7b7" },
+  risky:   { label: "Risky",           color: "#c2410c", bg: "#fff7ed", border: "#fdba74" },
+  bad:     { label: "Not Worth It",    color: "#b91c1c", bg: "#fef2f2", border: "#fca5a5" },
+  unknown: { label: "No Data",         color: "#64748b", bg: "#f1f5f9", border: "#cbd5e1" },
+};
+
+function formatProfit(value) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  const sign = value >= 0 ? "+" : "−";
+  return `${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatRoi(value) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  const sign = value >= 0 ? "+" : "−";
+  return `${sign}${Math.abs(value).toFixed(0)}%`;
+}
+
+function SelectInput({ value, onChange, options, label }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "#64748b",
+      letterSpacing: 0.6, textTransform: "uppercase", flex: 1, minWidth: 140 }}>
+      {label}
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        style={{
+          padding: "8px 10px",
+          borderRadius: 8,
+          border: "1px solid #d0dae8",
+          background: "#ffffff",
+          fontSize: 13,
+          fontFamily: "inherit",
+          color: "#1e293b",
+          cursor: "pointer",
+          textTransform: "none",
+          letterSpacing: 0,
+        }}>
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function ServiceROICard({ service, tierId, onTierChange, rawPrice, country, gradedPrices }) {
+  const tier = service.tiers.find((t) => t.id === tierId) ?? service.tiers[0];
+  const shipRoundTrip = Number(country.shipOneWay) * 2;
+  const { outcomes, totalCost, bestCase, worstCase, verdict } = computeServiceROI({
+    service,
+    tier,
+    rawPrice,
+    shipRoundTrip,
+    gradedPrices,
+  });
+
+  const hasAny = outcomes.some((o) => o.value > 0);
+  if (!hasAny) return null;
+
+  const verdictStyle = VERDICT_STYLES[verdict];
+  const overValueWarning = tier.maxValue && rawPrice > tier.maxValue;
+
+  return (
+    <div style={{
+      background: "#ffffff",
+      border: `1px solid ${service.color}33`,
+      borderTop: `3px solid ${service.color}`,
+      borderRadius: 10,
+      padding: "16px 18px",
+      display: "flex",
+      flexDirection: "column",
+      gap: 12,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontFamily: "'Cinzel',serif", fontSize: 18, fontWeight: 900, color: service.color }}>
+            {service.label}
+          </span>
+          <span style={{ fontSize: 11, color: "#64748b" }}>grading</span>
+        </div>
+        <span style={{
+          fontSize: 10,
+          letterSpacing: 0.7,
+          textTransform: "uppercase",
+          padding: "3px 9px",
+          borderRadius: 12,
+          color: verdictStyle.color,
+          background: verdictStyle.bg,
+          border: `1px solid ${verdictStyle.border}`,
+          fontWeight: 700,
+        }}>
+          {verdictStyle.label}
+        </span>
+      </div>
+
+      <SelectInput
+        label="Service tier"
+        value={tier.id}
+        onChange={(id) => onTierChange(id)}
+        options={service.tiers.map((t) => ({ value: t.id, label: `${t.label} — $${t.price}` }))}
+      />
+
+      {overValueWarning && (
+        <div style={{ fontSize: 11, color: "#c2410c", background: "#fff7ed",
+          border: "1px solid #fdba74", borderRadius: 6, padding: "6px 9px" }}>
+          Card value exceeds this tier's declared max (${tier.maxValue}). Pick a higher tier.
+        </div>
+      )}
+
+      <div style={{
+        background: "#f8fafc",
+        border: "1px solid #e2e8f0",
+        borderRadius: 8,
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        fontSize: 12,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", color: "#64748b" }}>
+          <span>Card cost (raw)</span><span>${rawPrice.toFixed(2)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", color: "#64748b" }}>
+          <span>Grading fee</span><span>${tier.price.toFixed(2)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", color: "#64748b" }}>
+          <span>Shipping (round trip)</span><span>${shipRoundTrip.toFixed(2)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", color: "#1e293b",
+          fontWeight: 700, paddingTop: 4, borderTop: "1px solid #e2e8f0", marginTop: 2 }}>
+          <span>Total investment</span><span>${totalCost.toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 1fr 0.9fr", gap: 8,
+          fontSize: 10, color: "#94a3b8", letterSpacing: 0.6, textTransform: "uppercase", padding: "0 10px" }}>
+          <span>Grade</span><span style={{ textAlign: "right" }}>Sale value</span>
+          <span style={{ textAlign: "right" }}>Net profit</span><span style={{ textAlign: "right" }}>ROI</span>
+        </div>
+        {outcomes.map((o) => {
+          const positive = o.profit !== null && o.profit > 0;
+          const negative = o.profit !== null && o.profit < 0;
+          return (
+            <div key={o.label} style={{
+              display: "grid",
+              gridTemplateColumns: "1.1fr 1fr 1fr 0.9fr",
+              gap: 8,
+              padding: "8px 10px",
+              borderRadius: 6,
+              background: positive ? "#ecfdf5" : negative ? "#fef2f2" : "#f8fafc",
+              border: `1px solid ${positive ? "#bbf7d0" : negative ? "#fecaca" : "#e2e8f0"}`,
+              fontSize: 13,
+              alignItems: "center",
+            }}>
+              <span style={{ color: "#1e293b", fontWeight: 600 }}>{o.label}</span>
+              <span style={{ textAlign: "right", color: "#1e293b" }}>
+                {o.value > 0 ? `$${o.value.toFixed(2)}` : "—"}
+              </span>
+              <span style={{ textAlign: "right", fontWeight: 700,
+                color: positive ? "#047857" : negative ? "#b91c1c" : "#94a3b8" }}>
+                {formatProfit(o.profit)}
+              </span>
+              <span style={{ textAlign: "right", fontWeight: 700,
+                color: positive ? "#047857" : negative ? "#b91c1c" : "#94a3b8" }}>
+                {formatRoi(o.roi)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {bestCase && worstCase && (
+        <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
+          Best case <strong style={{ color: bestCase.profit >= 0 ? "#047857" : "#b91c1c" }}>
+            {formatProfit(bestCase.profit)}
+          </strong> ({bestCase.label}) ·
+          Worst case <strong style={{ color: worstCase.profit >= 0 ? "#047857" : "#b91c1c" }}>
+            {formatProfit(worstCase.profit)}
+          </strong> ({worstCase.label})
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GradingROICalculator({ detail }) {
+  const rawPrice = Number(detail?.raw_market_price ?? detail?.current_price ?? 0);
+  const gradedPrices = detail?.graded_prices ?? {};
+  const anyGraded = Object.values(gradedPrices).some((v) => Number(v) > 0);
+
+  const initialPrefs = useRef(null);
+  if (initialPrefs.current === null) initialPrefs.current = loadGradingPrefs();
+
+  const [countryCode, setCountryCode] = useState(
+    initialPrefs.current.country ?? "US"
+  );
+  const [tiers, setTiers] = useState(() => ({
+    PSA: initialPrefs.current.tiers?.PSA ?? "value",
+    CGC: initialPrefs.current.tiers?.CGC ?? "standard",
+    BGS: initialPrefs.current.tiers?.BGS ?? "economy",
+  }));
+
+  useEffect(() => {
+    saveGradingPrefs({ country: countryCode, tiers });
+  }, [countryCode, tiers]);
+
+  const country = GRADING_COUNTRIES.find((c) => c.code === countryCode) ?? GRADING_COUNTRIES[0];
+
+  if (!anyGraded || rawPrice <= 0) return null;
+
+  return (
+    <div style={{
+      background: "#ffffff",
+      border: "1px solid #d0dae8",
+      borderRadius: 10,
+      padding: "20px 22px",
+      marginBottom: 16,
+      boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#b45309" strokeWidth="2.2">
+          <path d="M12 2v20M2 12h20" />
+        </svg>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#475569" }}>Grading ROI Calculator</span>
+      </div>
+      <p style={{ fontSize: 11, color: "#64748b", lineHeight: 1.55, marginBottom: 14, maxWidth: 560 }}>
+        Estimate whether sending this card to PSA, CGC or BGS is likely to pay off.
+        Pick your country (changes shipping costs) and the service tier to see the breakdown.
+      </p>
+
+      <div style={{ marginBottom: 14 }}>
+        <SelectInput
+          label="Your country (shipping)"
+          value={countryCode}
+          onChange={setCountryCode}
+          options={GRADING_COUNTRIES.map((c) => ({
+            value: c.code,
+            label: `${c.label} — ~$${c.shipOneWay} one way`,
+          }))}
+        />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 12 }}>
+        {GRADING_SERVICES.map((service) => (
+          <ServiceROICard
+            key={service.id}
+            service={service}
+            tierId={tiers[service.id]}
+            onTierChange={(id) => setTiers((prev) => ({ ...prev, [service.id]: id }))}
+            rawPrice={rawPrice}
+            country={country}
+            gradedPrices={gradedPrices}
+          />
+        ))}
+      </div>
+
+      <div style={{ marginTop: 14, fontSize: 10, color: "#94a3b8", lineHeight: 1.6 }}>
+        Estimates only. Grading fees, shipping, customs and insurance vary by submission, declared value and current promotions —
+        always check the grader's site (<a href="https://www.psacard.com" target="_blank" rel="noreferrer" style={{ color: "#64748b" }}>PSA</a>,
+        {" "}<a href="https://www.cgccards.com" target="_blank" rel="noreferrer" style={{ color: "#64748b" }}>CGC</a>,
+        {" "}<a href="https://www.beckett.com/grading" target="_blank" rel="noreferrer" style={{ color: "#64748b" }}>BGS</a>) before submitting.
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView]               = useState("home");
   const [query, setQuery]             = useState("");
@@ -1158,6 +1534,8 @@ function DetailView({ card, detail, loading, onBack, onSelect }) {
               </div>
             )}
           </div>
+
+          <GradingROICalculator detail={detail} />
 
           {detail.history_unavailable && (
             <div style={{
