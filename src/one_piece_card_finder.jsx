@@ -61,7 +61,8 @@ const GRADING_SERVICES = [
       { id: "express", label: "Express (~10 days)", price: 100 },
     ],
     grades: [
-      { key: "bgs10Pristine", label: "BGS 10 Pristine" },
+      { key: "bgs9_5",         label: "BGS 9.5" },
+      { key: "bgs10Pristine",  label: "BGS 10 Pristine" },
       { key: "bgs10BlackLabel", label: "BGS 10 Black Label" },
     ],
   },
@@ -384,6 +385,7 @@ async function fetchPriceChartingDetail(card) {
       psa10: gradedPrices.psa10 ?? null,
       cgc10: gradedPrices.cgc10 ?? null,
       cgc10Pristine: gradedPrices.cgc10Pristine ?? null,
+      bgs9_5: gradedPrices.bgs9_5 ?? null,
       bgs10Pristine: gradedPrices.bgs10Pristine ?? null,
       bgs10BlackLabel: gradedPrices.bgs10BlackLabel ?? null,
     },
@@ -415,11 +417,19 @@ async function fetchDetail(card) {
 
   const rows = Array.isArray(detailRows) ? detailRows : [];
   const variants = rows.map((row) => normalizeCard(row, card.source));
+  const cardNameLc = card.name?.toLowerCase() ?? "";
+  const cardSetLc  = card.set_name?.toLowerCase() ?? "";
   const selectedVariant =
-    variants.find((row) => row.image_id && row.image_id === card.image_id) ||
-    variants.find((row) => row.image_url && row.image_url === card.image_url) ||
-    variants.find((row) => row.name?.toLowerCase() === card.name?.toLowerCase()) ||
-    variants.sort((a, b) => b.current_price - a.current_price)[0];
+    // Strongest match: same image id (unique per art variant)
+    variants.find((v) => v.image_id && v.image_id === card.image_id) ||
+    // Same image URL
+    variants.find((v) => v.image_url && v.image_url === card.image_url) ||
+    // Same name + same set (handles multiple promo cards with same number, e.g. P-001)
+    variants.find((v) => v.name?.toLowerCase() === cardNameLc && v.set_name?.toLowerCase() === cardSetLc) ||
+    // Same name, any set
+    variants.find((v) => v.name?.toLowerCase() === cardNameLc) ||
+    // Fallback: highest priced variant
+    [...variants].sort((a, b) => b.current_price - a.current_price)[0];
 
   const marketPrices = rows.map((row) => toPrice(row.market_price)).filter((price) => price > 0);
   const historyRows = Array.isArray(historyResponse?.data) ? historyResponse.data : [];
@@ -446,6 +456,7 @@ async function fetchDetail(card) {
       psa10: gradedPrices.psa10 ?? null,
       cgc10: gradedPrices.cgc10 ?? null,
       cgc10Pristine: gradedPrices.cgc10Pristine ?? null,
+      bgs9_5: gradedPrices.bgs9_5 ?? null,
       bgs10Pristine: gradedPrices.bgs10Pristine ?? null,
       bgs10BlackLabel: gradedPrices.bgs10BlackLabel ?? null,
     },
@@ -670,6 +681,68 @@ function Skeleton({ w = "100%", h = 64 }) {
   );
 }
 
+function CardZoomModal({ imageUrl, name, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    // Prevent body scroll while modal is open
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 2000,
+        background: "rgba(15,23,42,0.88)",
+        backdropFilter: "blur(6px)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20,
+        cursor: "zoom-out",
+        animation: "fadeUp .15s ease",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ position: "relative", maxWidth: "min(90vw, 440px)", width: "100%" }}
+      >
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          style={{
+            position: "absolute", top: -14, right: -14, zIndex: 10,
+            width: 32, height: 32, borderRadius: "50%",
+            background: "#ffffff", border: "none", cursor: "pointer",
+            fontSize: 20, lineHeight: 1,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
+            fontFamily: "inherit",
+          }}
+        >×</button>
+        <img
+          src={imageUrl}
+          alt={name}
+          style={{
+            width: "100%",
+            borderRadius: 10,
+            boxShadow: "0 32px 80px rgba(0,0,0,0.55)",
+            display: "block",
+            cursor: "default",
+          }}
+        />
+        <div style={{ textAlign: "center", marginTop: 10, fontSize: 12, color: "rgba(255,255,255,0.6)" }}>
+          Tap outside or press Esc to close
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({ label, value, accent, big }) {
   return (
     <div style={{
@@ -851,16 +924,18 @@ function ServiceROICard({ service, tierId, onTierChange, rawPrice, country, grad
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 1fr 0.9fr", gap: 8,
+        <div className="roi-outcome-head" style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 1fr 0.9fr", gap: 8,
           fontSize: 10, color: "#94a3b8", letterSpacing: 0.6, textTransform: "uppercase", padding: "0 10px" }}>
-          <span>Grade</span><span style={{ textAlign: "right" }}>Sale value</span>
-          <span style={{ textAlign: "right" }}>Net profit</span><span style={{ textAlign: "right" }}>ROI</span>
+          <span>Grade</span>
+          <span className="roi-col-hide" style={{ textAlign: "right" }}>Sale value</span>
+          <span style={{ textAlign: "right" }}>Profit</span>
+          <span style={{ textAlign: "right" }}>ROI</span>
         </div>
         {outcomes.map((o) => {
           const positive = o.profit !== null && o.profit > 0;
           const negative = o.profit !== null && o.profit < 0;
           return (
-            <div key={o.label} style={{
+            <div key={o.label} className="roi-outcome-row" style={{
               display: "grid",
               gridTemplateColumns: "1.1fr 1fr 1fr 0.9fr",
               gap: 8,
@@ -872,7 +947,7 @@ function ServiceROICard({ service, tierId, onTierChange, rawPrice, country, grad
               alignItems: "center",
             }}>
               <span style={{ color: "#1e293b", fontWeight: 600 }}>{o.label}</span>
-              <span style={{ textAlign: "right", color: "#1e293b" }}>
+              <span className="roi-col-hide" style={{ textAlign: "right", color: "#1e293b" }}>
                 {o.value > 0 ? `$${o.value.toFixed(2)}` : "—"}
               </span>
               <span style={{ textAlign: "right", fontWeight: 700,
@@ -999,9 +1074,12 @@ export default function App() {
   const [detail, setDetail]           = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [selectedCard, setSelectedCard]   = useState(null);
-  const debounceRef = useRef(null);
-  const searchRef   = useRef(null);
-  const searchSeqRef = useRef(0);
+  const debounceRef   = useRef(null);
+  const searchRef     = useRef(null);
+  const searchSeqRef  = useRef(0);
+  // Snapshot of search state saved when the user dives into a card detail,
+  // so the back button can restore it exactly.
+  const prevSearchRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -1072,6 +1150,8 @@ export default function App() {
   const selectCard = async (card) => {
     searchSeqRef.current += 1;
     clearTimeout(debounceRef.current);
+    // Snapshot current search so the back button can restore it
+    prevSearchRef.current = { query, submittedQuery, submittedResults };
     setShowDrop(false);
     setSearching(false);
     setQuery(card.name);
@@ -1088,6 +1168,7 @@ export default function App() {
   };
 
   const goHome = () => {
+    prevSearchRef.current = null;
     setView("home");
     setQuery("");
     setResults([]);
@@ -1096,6 +1177,28 @@ export default function App() {
     setSearchingAll(false);
     setSelectedCard(null);
     setDetail(null);
+  };
+
+  // Returns to search results if there were any, otherwise goes fully home.
+  const goBack = () => {
+    const prev = prevSearchRef.current;
+    prevSearchRef.current = null;
+    setSelectedCard(null);
+    setDetail(null);
+    setView("home");
+    if (prev) {
+      setQuery(prev.query);
+      setSubmittedQuery(prev.submittedQuery);
+      setSubmittedResults(prev.submittedResults);
+      // Restore the dropdown results too in case user wants to pick another card
+      setResults(prev.submittedResults.slice(0, 6));
+    } else {
+      setQuery("");
+      setResults([]);
+      setSubmittedResults([]);
+      setSubmittedQuery("");
+    }
+    setSearchingAll(false);
   };
 
   useEffect(() => {
@@ -1120,6 +1223,28 @@ export default function App() {
         .hov-drop:hover{background:#eef2f8!important}
         .hov-back:hover{border-color:#94a3b8!important;color:#1e293b!important;background:#f8fafc!important}
         .hov-donate:hover{background:#0070ba!important;color:#ffffff!important;border-color:#0070ba!important;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,112,186,0.25)!important}
+        @media(hover:none){.hov-row:hover{transform:none!important;box-shadow:0 1px 3px rgba(15,23,42,0.04)!important}}
+        @media(max-width:640px){
+          .header-bar{flex-wrap:wrap;padding:10px 14px!important;gap:10px!important}
+          .header-search-area{margin-left:0!important;width:100%!important;flex-shrink:1!important}
+          .header-search-area>div:last-child{width:100%!important}
+          .mob-hide{display:none!important}
+          .main-pad{padding:20px 14px!important}
+          .hero-pad{padding:24px 0 36px!important}
+          .hero-title{font-size:26px!important;letter-spacing:0!important}
+          .hero-sub{font-size:13px!important}
+          .detail-top{gap:16px!important}
+          .detail-top>div:first-child img,.detail-top>div:first-child svg{max-width:140px!important;max-height:196px!important}
+          .detail-info{min-width:0!important}
+          .roi-outcome-row{grid-template-columns:1fr auto auto!important;font-size:12px!important}
+          .roi-outcome-head{grid-template-columns:1fr auto auto!important;font-size:9px!important}
+          .roi-col-hide{display:none!important}
+          .section-badge{display:none!important}
+          .stat-grid{gap:6px!important}
+        }
+        @media(min-width:641px){
+          .mob-show{display:none!important}
+        }
       `}</style>
 
       <div style={{ minHeight: "100vh", background: "#f0f4fa", fontFamily: "'Outfit', sans-serif", color: "#1e293b" }}>
@@ -1129,7 +1254,7 @@ export default function App() {
           backgroundSize: "48px 48px" }} />
 
         {/* Header */}
-        <header style={{ position: "sticky", top: 0, zIndex: 100,
+        <header className="header-bar" style={{ position: "sticky", top: 0, zIndex: 100,
           background: "rgba(255,255,255,0.92)", backdropFilter: "blur(14px)",
           borderBottom: "1px solid #d0dae8", padding: "14px 28px",
           display: "flex", alignItems: "center", gap: 20, boxShadow: "0 1px 0 rgba(15,23,42,0.04)" }}>
@@ -1144,9 +1269,9 @@ export default function App() {
           </div>
 
           {/* Search */}
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-            <DonateLink compact />
-          <div ref={searchRef} style={{ position: "relative", width: "min(440px,100%)" }}>
+          <div className="header-search-area" style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <span className="mob-hide"><DonateLink compact /></span>
+          <div ref={searchRef} style={{ position: "relative", width: "min(440px,100%)", flex: 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8,
               background: "#ffffff", border: "1px solid #d0dae8", borderRadius: 8, padding: "9px 14px", boxShadow: "0 1px 3px rgba(15,23,42,0.04)" }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -1209,7 +1334,7 @@ export default function App() {
           </div>
         </header>
 
-        <main style={{ padding: "32px 28px", maxWidth: 1020, margin: "0 auto" }}>
+        <main className="main-pad" style={{ padding: "32px 28px", maxWidth: 1020, margin: "0 auto" }}>
           {view === "home"
             ? <HomeView
                 topCards={topCards}
@@ -1221,7 +1346,14 @@ export default function App() {
                 searchingAll={searchingAll}
                 onSelect={selectCard}
               />
-            : <DetailView card={selectedCard} detail={detail} loading={loadingDetail} onBack={goHome} onSelect={selectCard} />}
+            : <DetailView
+                card={selectedCard}
+                detail={detail}
+                loading={loadingDetail}
+                onBack={goBack}
+                backLabel={prevSearchRef.current?.submittedQuery ? `Results for "${prevSearchRef.current.submittedQuery}"` : null}
+                onSelect={selectCard}
+              />}
         </main>
         <DonateFooter />
       </div>
@@ -1284,7 +1416,7 @@ function SectionHeader({ title, badge }) {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="#b45309"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
       <span style={{ fontFamily: "'Cinzel',serif", fontSize: 16, color: "#b45309" }}>{title}</span>
       <div style={{ flex: 1, height: 1, background: "linear-gradient(90deg,#d0dae8,transparent)" }} />
-      <span style={{ fontSize: 10, color: "#94a3b8", letterSpacing: 2 }}>{badge}</span>
+      <span className="section-badge" style={{ fontSize: 10, color: "#94a3b8", letterSpacing: 2 }}>{badge}</span>
     </div>
   );
 }
@@ -1294,16 +1426,16 @@ function HomeView({ topCards, topCardsJp, loading, loadingJp, searchResults, sea
 
   return (
     <div>
-      <div style={{ textAlign: "center", padding: "36px 0 52px" }}>
+      <div className="hero-pad" style={{ textAlign: "center", padding: "36px 0 52px" }}>
         <div style={{ fontSize: 10, letterSpacing: 5, color: "#64748b", textTransform: "uppercase", marginBottom: 10 }}>
           Real-Time Market Data
         </div>
-        <h1 style={{ fontFamily: "'Cinzel',serif", fontSize: 36, fontWeight: 900,
+        <h1 className="hero-title" style={{ fontFamily: "'Cinzel',serif", fontSize: 36, fontWeight: 900,
           color: "#b45309", letterSpacing: 1, lineHeight: 1.15,
           textShadow: "0 2px 12px rgba(180,83,9,0.15)", marginBottom: 10 }}>
-          Find Your Card's Value
+          Find Your Card&apos;s Value
         </h1>
-        <p style={{ color: "#64748b", fontSize: 14, maxWidth: 480, margin: "0 auto", lineHeight: 1.6 }}>
+        <p className="hero-sub" style={{ color: "#64748b", fontSize: 14, maxWidth: 480, margin: "0 auto", lineHeight: 1.6 }}>
           English &amp; Japanese prices, sales history &amp; graded values for One Piece TCG cards
         </p>
       </div>
@@ -1380,17 +1512,19 @@ function HomeView({ topCards, topCardsJp, loading, loadingJp, searchResults, sea
   );
 }
 
-function DetailView({ card, detail, loading, onBack, onSelect }) {
+function DetailView({ card, detail, loading, onBack, backLabel, onSelect }) {
   if (!card) return null;
+  const [zoomOpen, setZoomOpen] = useState(false);
   const cr = R(detail?.rarity ?? card?.rarity);
   const isJapanese = (detail?.region ?? card?.region) === "JP";
   const graded = detail?.graded_prices ?? {};
   const gradedRows = [
-    { label: "PSA 9", value: graded.psa9 },
-    { label: "PSA 10", value: graded.psa10 },
-    { label: "CGC 10", value: graded.cgc10 },
-    { label: "CGC 10 Pristine", value: graded.cgc10Pristine },
-    { label: "BGS 10 Pristine", value: graded.bgs10Pristine },
+    { label: "PSA 9",             value: graded.psa9 },
+    { label: "PSA 10",            value: graded.psa10 },
+    { label: "CGC 10",            value: graded.cgc10 },
+    { label: "CGC 10 Pristine",   value: graded.cgc10Pristine },
+    { label: "BGS 9.5",           value: graded.bgs9_5 },
+    { label: "BGS 10 Pristine",   value: graded.bgs10Pristine },
     { label: "BGS 10 Black Label", value: graded.bgs10BlackLabel },
   ];
   const hasAnyGraded = gradedRows.some((item) => Number.isFinite(Number(item.value)) && Number(item.value) > 0);
@@ -1403,7 +1537,7 @@ function DetailView({ card, detail, loading, onBack, onSelect }) {
           borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 12,
           marginBottom: 26, display: "inline-flex", alignItems: "center", gap: 6,
           fontFamily: "inherit", transition: "all .15s" }}>
-        ← Back to Home
+        ← {backLabel ? backLabel : "Home"}
       </button>
 
       {loading || !detail ? (
@@ -1424,10 +1558,33 @@ function DetailView({ card, detail, loading, onBack, onSelect }) {
         </div>
       ) : (
         <div>
+          {zoomOpen && detail.image_url && (
+            <CardZoomModal imageUrl={detail.image_url} name={detail.name} onClose={() => setZoomOpen(false)} />
+          )}
+
           {/* Top section */}
-          <div style={{ display: "flex", gap: 28, marginBottom: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
-            <CardArt name={detail.name} rarity={detail.rarity} cardNumber={detail.card_number} imageUrl={detail.image_url} w={178} h={249} />
-            <div style={{ flex: 1, minWidth: 240 }}>
+          <div className="detail-top" style={{ display: "flex", gap: 28, marginBottom: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
+            <div
+              onClick={() => detail.image_url && setZoomOpen(true)}
+              title={detail.image_url ? "Click to zoom" : undefined}
+              style={{ cursor: detail.image_url ? "zoom-in" : "default", flexShrink: 0, position: "relative" }}
+            >
+              <CardArt name={detail.name} rarity={detail.rarity} cardNumber={detail.card_number} imageUrl={detail.image_url} w={178} h={249} />
+              {detail.image_url && (
+                <div style={{
+                  position: "absolute", bottom: 6, right: 6,
+                  background: "rgba(15,23,42,0.55)", borderRadius: 5,
+                  padding: "3px 6px", fontSize: 10, color: "#ffffff",
+                  display: "flex", alignItems: "center", gap: 4,
+                  backdropFilter: "blur(4px)",
+                  pointerEvents: "none",
+                }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
+                  Zoom
+                </div>
+              )}
+            </div>
+            <div className="detail-info" style={{ flex: 1, minWidth: 240 }}>
               <div style={{ fontSize: 9, letterSpacing: 3.5, color: "#64748b", textTransform: "uppercase", marginBottom: 8 }}>
                 {detail.set_name}
               </div>
@@ -1448,7 +1605,7 @@ function DetailView({ card, detail, loading, onBack, onSelect }) {
                   {detail.description}
                 </p>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div className="stat-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <StatCard label="Current Value" value={`$${Number(detail.current_price ?? 0).toFixed(2)}`} accent={cr.color} big />
                 <StatCard label="30d Average"   value={`$${Number(detail.avg_price_30d ?? 0).toFixed(2)}`} accent={cr.color} />
                 <StatCard label="30d Low"        value={`$${Number(detail.price_low ?? 0).toFixed(2)}`}     accent={cr.color} />

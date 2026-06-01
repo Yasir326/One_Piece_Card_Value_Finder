@@ -165,6 +165,7 @@ function parseFullPriceGuide(html = '') {
     psa10: map.get('PSA 10') ?? null,
     cgc10: map.get('CGC 10') ?? null,
     cgc10Pristine: map.get('CGC 10 Pristine') ?? null,
+    bgs9_5: map.get('BGS 9.5') ?? map.get('Grade 9.5') ?? null,
     bgs10Pristine: map.get('BGS 10') ?? null,
     bgs10BlackLabel: map.get('BGS 10 Black') ?? null,
   }
